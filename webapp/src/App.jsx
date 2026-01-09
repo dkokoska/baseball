@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Papa from 'papaparse';
-import { Search, Trophy, DollarSign, TrendingUp, Activity } from 'lucide-react';
+import { Search, Trophy, DollarSign, TrendingUp, Activity, Plus, Minus, Save } from 'lucide-react';
 import { cn } from './lib/utils';
 import {
   useReactTable,
@@ -10,80 +10,188 @@ import {
   flexRender,
 } from '@tanstack/react-table';
 
+const API_URL = 'http://localhost:3000/api/adjustments';
+
 function App() {
-  const [data, setData] = useState([]);
+  const [rawData, setRawData] = useState([]);
+  const [adjustments, setAdjustments] = useState({}); // { playerId-stat: delta }
   const [loading, setLoading] = useState(true);
   const [globalFilter, setGlobalFilter] = useState('');
 
+  // 1. Fetch CSV and Adjustments
   useEffect(() => {
-    fetch('/2026PC.csv')
-      .then((response) => response.text())
-      .then((csvText) => {
-        Papa.parse(csvText, {
+    const fetchData = async () => {
+      try {
+        const [csvResponse, adjResponse] = await Promise.all([
+          fetch('/2026PC.csv').then((res) => res.text()),
+          fetch(API_URL).then((res) => res.json())
+        ]);
+
+        const parsed = Papa.parse(csvResponse, {
           header: true,
           dynamicTyping: true,
           skipEmptyLines: true,
-          complete: (results) => {
-            const processedData = calculateFromRawData(results.data);
-            setData(processedData);
-            setLoading(false);
-          },
         });
-      });
+
+        // Convert adjustments array to map for fast lookup
+        // Key: `${playerId}-${stat}`
+        const adjMap = {};
+        if (adjResponse.data) {
+          adjResponse.data.forEach(adj => {
+            adjMap[`${adj.playerId}-${adj.stat}`] = adj.delta;
+          });
+        }
+
+        setRawData(parsed.data);
+        setAdjustments(adjMap);
+        setLoading(false);
+      } catch (error) {
+        console.error("Failed to load data", error);
+        setLoading(false);
+      }
+    };
+
+    fetchData();
   }, []);
+
+  // 2. Handle Stat Adjustment (Optimistic UI + API Save)
+  const handleAdjustment = useCallback(async (playerId, stat, deltaChange) => {
+    const key = `${playerId}-${stat}`;
+
+    // Calculate new value directly to ensure correct stepping
+    const currentDelta = adjustments[key] || 0;
+    // Avoid floating point drift by rounding
+    const newDelta = Math.round((currentDelta + deltaChange) * 100) / 100;
+
+    // Optimistic update
+    setAdjustments(prev => ({
+      ...prev,
+      [key]: newDelta
+    }));
+
+    // API Call
+    try {
+      await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId, stat, delta: newDelta })
+      });
+    } catch (err) {
+      console.error("Failed to save adjustment", err);
+    }
+  }, [adjustments]);
+
+  // 3. Process Data (Merge + Calculate)
+  const processedData = useMemo(() => {
+    if (loading || !rawData.length) return [];
+    return calculateFromRawData(rawData, adjustments);
+  }, [rawData, adjustments, loading]);
+
+  // UI Components for Steppers
+  const StatCell = ({ row, stat, step = 1, fixed = 0 }) => {
+    const originalValue = row.original[stat];
+    if (typeof originalValue !== 'number') return null;
+
+    const playerId = row.original.PlayerId;
+    const key = `${playerId}-${stat}`;
+
+    // Total Value = Original + Adjustment
+    const adjustment = adjustments[key] || 0;
+    const displayValue = (originalValue + adjustment).toFixed(fixed);
+
+    // Visual indicator of adjustment
+    const isAdjusted = adjustment !== 0;
+    const adjColor = adjustment > 0 ? "text-green-400" : adjustment < 0 ? "text-red-400" : "text-neutral-400";
+
+    return (
+      <div className="flex items-center justify-between gap-1 w-full max-w-[140px] select-none">
+        <button
+          onClick={(e) => { e.stopPropagation(); handleAdjustment(playerId, stat, -step); }}
+          className="w-6 h-6 flex items-center justify-center bg-neutral-800 hover:bg-red-500/20 rounded active:scale-95 transition-all text-neutral-500 hover:text-red-400 border border-neutral-700"
+        >
+          <Minus className="w-3 h-3" />
+        </button>
+
+        <div className="flex flex-col items-center flex-1">
+          <span className={cn("font-mono font-medium leading-none", isAdjusted ? "text-blue-300" : "text-neutral-300")}>
+            {displayValue}
+          </span>
+          {isAdjusted && (
+            <span className={cn("text-[9px] leading-tight", adjColor)}>
+              {adjustment > 0 ? '+' : ''}{adjustment.toFixed(fixed)}
+            </span>
+          )}
+        </div>
+
+        <button
+          onClick={(e) => { e.stopPropagation(); handleAdjustment(playerId, stat, step); }}
+          className="w-6 h-6 flex items-center justify-center bg-neutral-800 hover:bg-green-500/20 rounded active:scale-95 transition-all text-neutral-500 hover:text-green-400 border border-neutral-700"
+        >
+          <Plus className="w-3 h-3" />
+        </button>
+      </div>
+    );
+  };
 
   const columns = useMemo(
     () => [
       {
         accessorKey: 'Name',
         header: 'Player',
-        cell: (info) => <span className="font-semibold text-white">{info.getValue()}</span>,
-      },
-      {
-        accessorKey: 'Team',
-        header: 'Team',
-        cell: (info) => <span className="text-gray-400">{info.getValue()}</span>,
+        cell: (info) => (
+          <div className="flex flex-col">
+            <span className="font-semibold text-white text-sm">{info.getValue()}</span>
+            <span className="text-xs text-neutral-500">{info.row.original.Team}</span>
+          </div>
+        ),
       },
       {
         accessorKey: 'ERA',
         header: 'ERA',
-        cell: (info) => info.getValue()?.toFixed(2),
-      },
-      {
-        accessorKey: 'W',
-        header: 'W',
-      },
-      {
-        accessorKey: 'SV',
-        header: 'SV',
+        cell: (info) => <StatCell row={info.row} stat="ERA" step={0.05} fixed={2} />,
       },
       {
         accessorKey: 'WHIP',
         header: 'WHIP',
-        cell: (info) => info.getValue()?.toFixed(2),
+        cell: (info) => <StatCell row={info.row} stat="WHIP" step={0.01} fixed={2} />,
+      },
+      {
+        accessorKey: 'W',
+        header: 'W',
+        cell: (info) => <StatCell row={info.row} stat="W" step={1} fixed={0} />,
+      },
+      {
+        accessorKey: 'SV',
+        header: 'SV',
+        cell: (info) => <StatCell row={info.row} stat="SV" step={1} fixed={0} />,
       },
       {
         accessorKey: 'SO',
         header: 'SO',
+        cell: (info) => <StatCell row={info.row} stat="SO" step={5} fixed={0} />,
       },
       {
         accessorKey: 'Value',
-        header: 'Value ($)',
+        header: 'Value',
         cell: (info) => {
           const val = info.getValue();
+          const isPositive = val > 0;
           return (
-            <span className={cn("font-bold", val > 0 ? "text-green-400" : "text-gray-500")}>
+            <div className={cn("font-bold text-base px-2 py-1 rounded text-center border",
+              isPositive
+                ? "text-green-400 bg-green-500/10 border-green-500/30"
+                : "text-red-400 bg-red-500/10 border-red-500/30")}>
               ${val.toFixed(2)}
-            </span>
+            </div>
           );
         },
       },
     ],
-    []
+    [adjustments] // Re-render columns when adjustments change
   );
 
   const table = useReactTable({
-    data,
+    data: processedData,
     columns,
     state: {
       globalFilter,
@@ -95,68 +203,70 @@ function App() {
   });
 
   return (
-    <div className="min-h-screen bg-neutral-900 text-neutral-100 p-8 font-sans w-full">
-      <div className="max-w-7xl mx-auto space-y-8">
+    <div className="min-h-screen bg-neutral-900 text-neutral-100 p-6 font-sans w-full">
+      <div className="max-w-[1920px] mx-auto space-y-6">
         {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-neutral-800 pb-6">
           <div>
             <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-indigo-500 bg-clip-text text-transparent flex items-center gap-3">
               <Trophy className="w-10 h-10 text-indigo-500" />
-              Fantasy Value Tracker
+              Fantasy Value Editor
             </h1>
-            <p className="text-neutral-400 mt-2 flex items-center gap-2">
+            <p className="text-neutral-400 mt-2 flex items-center gap-2 text-sm">
               <Activity className="w-4 h-4" />
-              Real-time valuation based on 2026 Projections ($1500 Pool)
+              Interactive Valuation • Top 200 • $1500 Pool
             </p>
           </div>
 
           {/* Stats Cards */}
           <div className="flex gap-4">
             <div className="bg-neutral-800/50 p-4 rounded-xl border border-neutral-700/50 backdrop-blur-sm">
-              <span className="text-xs text-neutral-500 uppercase tracking-wider font-semibold">Total Pool</span>
+              <span className="text-xs text-neutral-500 uppercase tracking-wider font-semibold">Pool</span>
               <div className="text-2xl font-mono text-green-400 flex items-center gap-1">
                 <DollarSign className="w-5 h-5" />
                 1,500
               </div>
             </div>
             <div className="bg-neutral-800/50 p-4 rounded-xl border border-neutral-700/50 backdrop-blur-sm">
-              <span className="text-xs text-neutral-500 uppercase tracking-wider font-semibold">Players</span>
+              <span className="text-xs text-neutral-500 uppercase tracking-wider font-semibold">Adjustments</span>
               <div className="text-2xl font-mono text-blue-400 flex items-center gap-1">
-                <TrendingUp className="w-5 h-5" />
-                {data.length}
+                <Save className="w-5 h-5" />
+                {Object.keys(adjustments).length}
               </div>
             </div>
           </div>
         </div>
 
         {/* Search */}
-        <div className="relative group">
-          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-            <Search className="h-5 w-5 text-neutral-500 group-focus-within:text-blue-400 transition-colors" />
+        <div className="w-full">
+          <div className="relative group max-w-md">
+            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+              <Search className="h-5 w-5 text-neutral-500 group-focus-within:text-blue-400 transition-colors" />
+            </div>
+            <input
+              type="text"
+              placeholder="Search players..."
+              value={globalFilter}
+              onChange={(e) => setGlobalFilter(e.target.value)}
+              className="block w-full pl-12 pr-4 py-3 bg-neutral-800/50 border border-neutral-700 rounded-xl text-neutral-100 placeholder-neutral-500 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 focus:outline-none transition-all shadow-lg"
+            />
           </div>
-          <input
-            type="text"
-            placeholder="Search players..."
-            value={globalFilter}
-            onChange={(e) => setGlobalFilter(e.target.value)}
-            className="block w-full pl-12 pr-4 py-4 bg-neutral-800/50 border border-neutral-700 rounded-2xl text-neutral-100 placeholder-neutral-500 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 focus:outline-none transition-all shadow-lg"
-          />
         </div>
 
         {/* Table */}
-        <div className="bg-neutral-800/30 rounded-2xl border border-neutral-700/50 overflow-hidden shadow-xl backdrop-blur-sm">
+        <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden shadow-2xl">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 {table.getHeaderGroups().map((headerGroup) => (
-                  <tr key={headerGroup.id} className="border-b border-neutral-700/50 bg-neutral-800/80">
+                  <tr key={headerGroup.id} className="bg-neutral-800 text-neutral-400 border-b border-neutral-700">
                     {headerGroup.headers.map((header) => (
                       <th
                         key={header.id}
                         onClick={header.column.getToggleSortingHandler()}
-                        className="p-4 text-xs font-bold text-neutral-400 uppercase tracking-wider cursor-pointer hover:bg-neutral-700/50 transition-colors select-none"
+                        className="p-3 text-xs font-bold uppercase tracking-wider cursor-pointer hover:bg-neutral-700 transition-colors select-none border-r border-neutral-700 last:border-r-0 text-center"
                       >
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center justify-center gap-2">
                           {flexRender(
                             header.column.columnDef.header,
                             header.getContext()
@@ -182,10 +292,10 @@ function App() {
                   table.getRowModel().rows.map((row) => (
                     <tr
                       key={row.id}
-                      className="border-b border-neutral-800/50 hover:bg-neutral-700/30 transition-colors group"
+                      className="border-b border-neutral-800 hover:bg-neutral-800/50 transition-colors group"
                     >
                       {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="p-4 text-sm tabular-nums text-neutral-300">
+                        <td key={cell.id} className="p-2 text-center border-r border-neutral-800 last:border-r-0 relative">
                           {flexRender(
                             cell.column.columnDef.cell,
                             cell.getContext()
@@ -198,7 +308,7 @@ function App() {
               </tbody>
             </table>
           </div>
-          <div className="p-4 border-t border-neutral-700/50 bg-neutral-800/30 text-xs text-neutral-500 flex justify-end">
+          <div className="p-4 border-t border-neutral-800 bg-neutral-900 text-xs text-neutral-500 flex justify-end">
             Showing {table.getRowModel().rows.length} players
           </div>
         </div>
@@ -207,16 +317,22 @@ function App() {
   );
 }
 
-function calculateFromRawData(rawData) {
+function calculateFromRawData(rawData, adjustments) {
   // Filter only rows with valid stats
-  const players = rawData.filter(p =>
-    p.Name &&
-    typeof p.ERA === 'number' &&
-    typeof p.WHIP === 'number' &&
-    typeof p.W === 'number' &&
-    typeof p.SV === 'number' &&
-    typeof p.SO === 'number'
-  );
+  const players = rawData
+    .filter(p => p.Name && p.PlayerId)
+    .map(p => {
+      // Apply Adjustments
+      const pid = p.PlayerId;
+      return {
+        ...p,
+        ERA: p.ERA + (adjustments[`${pid}-ERA`] || 0),
+        WHIP: p.WHIP + (adjustments[`${pid}-WHIP`] || 0),
+        W: p.W + (adjustments[`${pid}-W`] || 0),
+        SV: p.SV + (adjustments[`${pid}-SV`] || 0),
+        SO: p.SO + (adjustments[`${pid}-SO`] || 0),
+      };
+    });
 
   // Calculate Mean and StdDev for each category
   const stats = ['ERA', 'WHIP', 'W', 'SV', 'SO'];
@@ -233,19 +349,16 @@ function calculateFromRawData(rawData) {
     stds[stat] = Math.sqrt(variance);
   });
 
-  // Calculate Z-Scores
-  // ERA and WHIP are better when lower => invert Z-score
-
   const scoredPlayers = players.map(p => {
     let zSum = 0;
-    // Lower is better (inverted Z)
-    zSum += (means['ERA'] - p.ERA) / stds['ERA'];
-    zSum += (means['WHIP'] - p.WHIP) / stds['WHIP'];
+    // Lower is better (inverted Z) - Avoid division by zero
+    zSum += stds['ERA'] ? (means['ERA'] - p.ERA) / stds['ERA'] : 0;
+    zSum += stds['WHIP'] ? (means['WHIP'] - p.WHIP) / stds['WHIP'] : 0;
 
     // Higher is better (standard Z)
-    zSum += (p.W - means['W']) / stds['W'];
-    zSum += (p.SV - means['SV']) / stds['SV'];
-    zSum += (p.SO - means['SO']) / stds['SO'];
+    zSum += stds['W'] ? (p.W - means['W']) / stds['W'] : 0;
+    zSum += stds['SV'] ? (p.SV - means['SV']) / stds['SV'] : 0;
+    zSum += stds['SO'] ? (p.SO - means['SO']) / stds['SO'] : 0;
 
     return { ...p, rawZ: zSum };
   });
@@ -253,11 +366,10 @@ function calculateFromRawData(rawData) {
   // Sort by raw Z-score descending to find the top players
   scoredPlayers.sort((a, b) => b.rawZ - a.rawZ);
 
-  // Identify Replacement Level (Player 201, considering 0-index that is index 200)
-  // Requirement: "only the top 200 pitchers should have a value > 0.0"
-  // So the 201st pitcher (index 200) defines the 0 line.
-  const replacementPlayer = scoredPlayers[200];
-  const replacementLevelZ = replacementPlayer ? replacementPlayer.rawZ : scoredPlayers[scoredPlayers.length - 1].rawZ;
+  // Identify Replacement Level (Player 201 => Index 200)
+  // Ensure we have enough players
+  const replacementIdx = Math.min(200, scoredPlayers.length - 1);
+  const replacementLevelZ = scoredPlayers[replacementIdx].rawZ;
 
   // Calculate Adjusted Score (Value Over Replacement)
   const evaluatedPlayers = scoredPlayers.map(p => ({
@@ -274,8 +386,6 @@ function calculateFromRawData(rawData) {
   return evaluatedPlayers.map(p => {
     let dollarValue = 0;
     if (positiveSum > 0) {
-      // We calculate a dollar value for everyone relative to the pool density
-      // For negative players, this effectively shows "negative dollars" relative to the scale
       dollarValue = (p.valOverReplacement / positiveSum) * 1500;
     }
     return { ...p, Value: dollarValue };
