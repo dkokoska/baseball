@@ -235,15 +235,14 @@ function calculateFromRawData(rawData) {
 
   // Calculate Z-Scores
   // ERA and WHIP are better when lower => invert Z-score
-  let totalPositiveScore = 0;
 
   const scoredPlayers = players.map(p => {
     let zSum = 0;
-    // Lower is better
+    // Lower is better (inverted Z)
     zSum += (means['ERA'] - p.ERA) / stds['ERA'];
     zSum += (means['WHIP'] - p.WHIP) / stds['WHIP'];
 
-    // Higher is better
+    // Higher is better (standard Z)
     zSum += (p.W - means['W']) / stds['W'];
     zSum += (p.SV - means['SV']) / stds['SV'];
     zSum += (p.SO - means['SO']) / stds['SO'];
@@ -251,39 +250,36 @@ function calculateFromRawData(rawData) {
     return { ...p, rawZ: zSum };
   });
 
-  // Normalize to currency
-  // Shift so min score is 0 to avoid negative values (or we can just clip negatives)
-  // Let's clip negatives for "Value" implies worth. If you are below average significantly, you might be $0 (waiver wire).
-  // Actually, to distribute $1500 "pool", we usually mean "sum of values = 1500".
-  // If we assume replacement level is 0, we sum only positive Value Above Replacement.
+  // Sort by raw Z-score descending to find the top players
+  scoredPlayers.sort((a, b) => b.rawZ - a.rawZ);
 
-  // Let's simply shift the lowest Z to 0 so everyone gets something (participation trophy approach)
-  // OR strictly cap at 0. Let's cap at 0.
+  // Identify Replacement Level (Player 201, considering 0-index that is index 200)
+  // Requirement: "only the top 200 pitchers should have a value > 0.0"
+  // So the 201st pitcher (index 200) defines the 0 line.
+  const replacementPlayer = scoredPlayers[200];
+  const replacementLevelZ = replacementPlayer ? replacementPlayer.rawZ : scoredPlayers[scoredPlayers.length - 1].rawZ;
 
-  // NOTE: Baseball valuations usually involve "Value over Replacement Player". 
-  // Simple approach: Shift everyone up so min is 0? That dilutes value.
-  // Better approach for "Fantasy Value": Only positive Z-sum players get value?
-  // Let's use a "Base + Z" approach.
-
-  // Let's just create a score: Score = max(0, rawZ + Offset).
-  // Calculate offset such that roughly the top N players get money?
-  // User asked for "suggest dollar value for that player. Assume a total pool of 1500 dollars for the ENTIRE list."
-  // So everyone needs a value? Or just the sum of all values displayed = 1500.
-
-  // Let's normalize positive scores.
-  const minZ = Math.min(...scoredPlayers.map(p => p.rawZ));
-  // Shift so all are positive
-  const shiftedPlayers = scoredPlayers.map(p => ({
+  // Calculate Adjusted Score (Value Over Replacement)
+  const evaluatedPlayers = scoredPlayers.map(p => ({
     ...p,
-    adjustedScore: p.rawZ - minZ // Now min is 0
+    valOverReplacement: p.rawZ - replacementLevelZ
   }));
 
-  const totalScore = shiftedPlayers.reduce((sum, p) => sum + p.adjustedScore, 0);
+  // Calculate sum of positive scores for pool distribution
+  const positiveSum = evaluatedPlayers
+    .filter(p => p.valOverReplacement > 0)
+    .reduce((sum, p) => sum + p.valOverReplacement, 0);
 
-  return shiftedPlayers.map(p => ({
-    ...p,
-    Value: (p.adjustedScore / totalScore) * 1500
-  })).sort((a, b) => b.Value - a.Value);
+  // Distribute $1500 pool
+  return evaluatedPlayers.map(p => {
+    let dollarValue = 0;
+    if (positiveSum > 0) {
+      // We calculate a dollar value for everyone relative to the pool density
+      // For negative players, this effectively shows "negative dollars" relative to the scale
+      dollarValue = (p.valOverReplacement / positiveSum) * 1500;
+    }
+    return { ...p, Value: dollarValue };
+  });
 }
 
 export default App;
