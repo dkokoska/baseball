@@ -66,6 +66,36 @@ app.post('/api/adjustments', (req, res) => {
     });
 });
 
+// POST batch adjustments
+app.post('/api/batch-adjustments', (req, res) => {
+    const adjustments = req.body; // Expecting array of { playerId, stat, delta }
+
+    if (!Array.isArray(adjustments)) {
+        return res.status(400).json({ error: 'Expected an array of adjustments' });
+    }
+
+    const sql = `INSERT INTO adjustments (playerId, stat, delta) VALUES (?, ?, ?)
+               ON CONFLICT(playerId, stat) DO UPDATE SET delta = excluded.delta`;
+
+    db.serialize(() => {
+        db.run('BEGIN TRANSACTION');
+        const stmt = db.prepare(sql);
+
+        adjustments.forEach(adj => {
+            stmt.run([adj.playerId, adj.stat, adj.delta]);
+        });
+
+        stmt.finalize();
+        db.run('COMMIT', (err) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json({ message: 'success', count: adjustments.length });
+        });
+    });
+});
+
 app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
 });
