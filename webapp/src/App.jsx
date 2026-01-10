@@ -8,8 +8,9 @@ import {
   getFilteredRowModel,
   flexRender,
 } from '@tanstack/react-table';
-import { calculateBaseValues, applyDisplayAdjustments } from './lib/valuation';
 import { StatCell } from './components/StatCell';
+import { ValueCell } from './components/ValueCell';
+import { CheckboxCell } from './components/CheckboxCell';
 
 const API_URL = 'http://localhost:3000/api';
 
@@ -22,6 +23,7 @@ function App() {
   const [globalFilter, setGlobalFilter] = useState('');
   const [poolAmount, setPoolAmount] = useState(1500);
   const [valuationConstants, setValuationConstants] = useState(null);
+  const [excludedPlayerIds, setExcludedPlayerIds] = useState(new Set());
 
   // 1. Fetch CSV and Initial Adjustments
   useEffect(() => {
@@ -123,21 +125,30 @@ function App() {
 
   const hasPendingChanges = Object.keys(pendingAdjustments).length > 0;
 
-  // 4. Calculate Data
-  // 4. Calculate Data
+  // 5. Toggle Exclusion
+  const toggleExclusion = useCallback((playerId) => {
+    setExcludedPlayerIds(prev => {
+      const next = new Set(prev);
+      if (next.has(playerId)) {
+        next.delete(playerId);
+      } else {
+        next.add(playerId);
+      }
+      return next;
+    });
+  }, []);
+
+  // 6. Calculate Data
   // Heavy calculation: only runs when rawData or committedAdjustments change (not on pending edits)
   const baseData = useMemo(() => {
     if (loading || !rawData.length) return [];
 
-    const { players, constants } = calculateBaseValues(rawData, committedAdjustments, poolAmount);
-    // Determine if we need to update constants in state?
-    // We can't set state in useMemo.
-    // But we can return both.
-    // Actually, let's keep it simple. We return the players here.
-    // BUT we need constants for the instant update.
+    // Filter out excluded players BEFORE base calculation
+    const activePlayers = rawData.filter(p => !excludedPlayerIds.has(p.PlayerId));
 
+    const { players, constants } = calculateBaseValues(activePlayers, committedAdjustments, poolAmount);
     return { players, constants };
-  }, [rawData, committedAdjustments, loading, poolAmount]); // Adding poolAmount to dependency reruns base calc on pool change
+  }, [rawData, committedAdjustments, loading, poolAmount, excludedPlayerIds]);
 
   // Light calculation: runs on every pending edit to update display values
   const processedData = useMemo(() => {
@@ -148,11 +159,32 @@ function App() {
   }, [baseData, pendingAdjustments, committedAdjustments, poolAmount]);
 
   // UI Components
+  // (Moved to external files)
 
 
   // Re-define columns in memo (no significant change except removing className helpers if any)
   const columns = useMemo(
     () => [
+      {
+        id: 'exclude',
+        header: 'Ex',
+        cell: (info) => (
+          <CheckboxCell
+            row={info.row}
+            isExcluded={false} // Since we filter them out of data, they are by definition NOT excluded in the list .. wait.
+            // If we filter them out, they don't appear in the table.
+            // The user said: "if the user clicks on the check box for Paul Skenes, then he will be removed from the list."
+            // So yes, clicking it removes them.
+            // But then how do you bring them back? 
+            // "This is display only".
+            // Usually "Exclude" implies they stay in list but are greyed out or value is 0.
+            // BUT user said "removed from the list".
+            // So I guess they are gone. To bring them back, user probably needs a "Show Hidden" toggle or refresh.
+            // I will implement "Remove from list" behavior as requested.
+            onToggle={toggleExclusion}
+          />
+        ),
+      },
       {
         id: 'place',
         header: 'Rank',
@@ -200,21 +232,11 @@ function App() {
       {
         accessorKey: 'Value',
         header: 'Value',
-        cell: (info) => {
-          const val = info.getValue();
-          const isPositive = val > 0;
-          return (
-            <div className="value-badge-container">
-              <div className={`value-badge ${isPositive ? 'positive' : 'negative'}`}>
-                ${val.toFixed(2)}
-              </div>
-            </div>
-          );
-        },
+        cell: (info) => <ValueCell value={info.getValue()} />,
       },
     ],
-    // Dependencies: handleStatChange is stable.
-    [handleStatChange]
+    // Dependencies: handleStatChange is stable. toggleExclusion is stable.
+    [handleStatChange, toggleExclusion]
   );
 
   const table = useReactTable({
@@ -241,9 +263,7 @@ function App() {
         <div className="app-header">
           <div className="header-title-group">
             <h1>
-              <Trophy className="icon-trophy" />
-              <Trophy className="icon-trophy" />
-              Koko's Baseball Prognostication
+              Koko's Pitcher Prognosticator
             </h1>
             <p className="header-subtitle">
               <Activity className="icon-activity" />
@@ -256,18 +276,15 @@ function App() {
             <div className="stats-summary">
               <div className="stat-box">
                 <div className="stat-label">Pool</div>
-                <div className="stat-box">
-                  <div className="stat-label">Pool</div>
-                  <div className="stat-value text-green">
-                    <div className="flex items-center gap-1">
-                      $
-                      <input
-                        type="number"
-                        className="bg-transparent text-green border-none focus:ring-0 p-0 w-16 text-right font-bold"
-                        value={poolAmount}
-                        onChange={(e) => setPoolAmount(Number(e.target.value))}
-                      />
-                    </div>
+                <div className="stat-value text-green">
+                  <div className="flex items-center gap-1">
+                    $
+                    <input
+                      type="number"
+                      className="bg-transparent text-green border-none focus:ring-0 p-0 w-16 text-right font-bold"
+                      value={poolAmount}
+                      onChange={(e) => setPoolAmount(Number(e.target.value))}
+                    />
                   </div>
                 </div>
               </div>
