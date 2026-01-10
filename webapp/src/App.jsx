@@ -11,6 +11,7 @@ import {
 import { StatCell } from './components/StatCell';
 import { ValueCell } from './components/ValueCell';
 import { CheckboxCell } from './components/CheckboxCell';
+import { calculateBaseValues, applyDisplayAdjustments } from './lib/valuation';
 
 const API_URL = 'http://localhost:3000/api';
 

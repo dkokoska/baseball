@@ -9,6 +9,7 @@ export function calculateBaseValues(rawData, committedAdjustments, poolAmount = 
     const sqSums = { ERA: 0, WHIP: 0, W: 0, SV: 0, SO: 0 };
     let count = 0;
 
+    // First pass: Calculate committed stats and raw sums (mainly to get averages for rate stats)
     const players = rawData
         .filter(p => p.Name && p.PlayerId)
         .map(p => {
@@ -21,28 +22,26 @@ export function calculateBaseValues(rawData, committedAdjustments, poolAmount = 
             const cSOAdj = committedAdjustments[`${pid}-SO`] || 0;
 
             // Calculate Committed Stats (_c*)
+            // We use safe arithmetic to avoid float issues later, though JS numbers are floats.
             const cERA = p.ERA + cERAAdj;
             const cWHIP = p.WHIP + cWHIPAdj;
             const cW = p.W + cWAdj;
             const cSV = p.SV + cSVAdj;
             const cSO = p.SO + cSOAdj;
+            const IP = p.IP || 0; // Ensure IP exists
 
             // Accumulate for stats
             sums.ERA += cERA;
-            sqSums.ERA += cERA * cERA;
             sums.WHIP += cWHIP;
-            sqSums.WHIP += cWHIP * cWHIP;
             sums.W += cW;
-            sqSums.W += cW * cW;
             sums.SV += cSV;
-            sqSums.SV += cSV * cSV;
             sums.SO += cSO;
-            sqSums.SO += cSO * cSO;
 
             count++;
 
             return {
                 ...p,
+                IP: IP,
                 _cERA: cERA,
                 _cWHIP: cWHIP,
                 _cW: cW,
@@ -53,33 +52,80 @@ export function calculateBaseValues(rawData, committedAdjustments, poolAmount = 
 
     if (count === 0) return { players: [], constants: {} };
 
-    // 2. Calculate Means and StdDevs
+    // 2. Calculate Means (Base Levels for comparison)
     const means = {};
-    const stds = {};
-
     distinctStats.forEach(stat => {
-        const mean = sums[stat] / count;
-        const variance = (sqSums[stat] / count) - (mean * mean);
-
-        means[stat] = mean;
-        stds[stat] = Math.sqrt(variance);
+        means[stat] = sums[stat] / count;
     });
 
-    // 3. Calculate Z-Scores and Sort
-    const scoredPlayers = players.map(p => {
+    // 3. Comparison Logic (Weighted for Rates)
+    // For W, SV, SO: Simple Z-score of the raw value.
+    // For ERA, WHIP: "Runs Saved" and "WH Saved" weighted by IP.
+
+    // We need to calculate the standard deviation of these *derived* values (or raw values for counting stats).
+    // Let's do a second pass to calculate the values we will Z-score, and their variance.
+
+    // Intermediate array to hold the values to score
+    const intermediate = players.map(p => {
+        // Impact values (Higher is better)
+
+        // ERA Impact: (AvgERA - PlayerERA) * (IP / 9)  => Runs prevented vs average pitcher in that many innings
+        const diffERA = (means['ERA'] - p._cERA);
+        const valERA = diffERA * (p.IP / 9);
+
+        // WHIP Impact: (AvgWHIP - PlayerWHIP) * IP => Walks/Hits prevented vs average pitcher
+        const diffWHIP = (means['WHIP'] - p._cWHIP);
+        const valWHIP = diffWHIP * p.IP;
+
+        return {
+            ...p,
+            _vERA: valERA,
+            _vWHIP: valWHIP,
+            _vW: p._cW,
+            _vSV: p._cSV,
+            _vSO: p._cSO
+        };
+    });
+
+    // Calculate Standard Deviations for these 5 value metrics
+    const iSums = { _vERA: 0, _vWHIP: 0, _vW: 0, _vSV: 0, _vSO: 0 };
+    const iSqSums = { _vERA: 0, _vWHIP: 0, _vW: 0, _vSV: 0, _vSO: 0 };
+
+    intermediate.forEach(p => {
+        ['_vERA', '_vWHIP', '_vW', '_vSV', '_vSO'].forEach(k => {
+            const val = p[k];
+            iSums[k] += val;
+            iSqSums[k] += val * val;
+        });
+    });
+
+    const iMeans = {};
+    const iStds = {};
+
+    ['_vERA', '_vWHIP', '_vW', '_vSV', '_vSO'].forEach(k => {
+        const mean = iSums[k] / count;
+        const variance = (iSqSums[k] / count) - (mean * mean);
+        iMeans[k] = mean;
+        iStds[k] = Math.sqrt(variance);
+    });
+
+    // 4. Calculate Final Z-Scores
+    const scoredPlayers = intermediate.map(p => {
         let zSum = 0;
-        zSum += stds['ERA'] ? (means['ERA'] - p._cERA) / stds['ERA'] : 0;
-        zSum += stds['WHIP'] ? (means['WHIP'] - p._cWHIP) / stds['WHIP'] : 0;
-        zSum += stds['W'] ? (p._cW - means['W']) / stds['W'] : 0;
-        zSum += stds['SV'] ? (p._cSV - means['SV']) / stds['SV'] : 0;
-        zSum += stds['SO'] ? (p._cSO - means['SO']) / stds['SO'] : 0;
+        // For all these derived metrics, HIGHER is BETTER.
+        // Even for ERA/WHIP, we converted to "Runs Saved", where positive is good.
+        zSum += iStds['_vERA'] ? (p._vERA - iMeans['_vERA']) / iStds['_vERA'] : 0;
+        zSum += iStds['_vWHIP'] ? (p._vWHIP - iMeans['_vWHIP']) / iStds['_vWHIP'] : 0;
+        zSum += iStds['_vW'] ? (p._vW - iMeans['_vW']) / iStds['_vW'] : 0;
+        zSum += iStds['_vSV'] ? (p._vSV - iMeans['_vSV']) / iStds['_vSV'] : 0;
+        zSum += iStds['_vSO'] ? (p._vSO - iMeans['_vSO']) / iStds['_vSO'] : 0;
 
         return { ...p, rawZ: zSum };
     });
 
     scoredPlayers.sort((a, b) => b.rawZ - a.rawZ);
 
-    // 4. Calculate Replacement Level & Value
+    // 5. Calculate Replacement Level & Value
     const replacementIdx = Math.min(200, scoredPlayers.length - 1);
     const replacementLevelZ = scoredPlayers[replacementIdx].rawZ;
 
@@ -100,17 +146,24 @@ export function calculateBaseValues(rawData, committedAdjustments, poolAmount = 
         return { ...p, Value: dollarValue };
     });
 
-    // Return players AND constants for caching
+    // Return players AND constants needed for dynamic updates
+    // We need the original Rate Means (to calculate impact) AND the Value Means/Stds (to calculate Z)
     return {
         players: finalPlayers,
-        constants: { means, stds, replacementLevelZ, positiveSum }
+        constants: {
+            rateMeans: { ERA: means.ERA, WHIP: means.WHIP },
+            valMeans: iMeans,
+            valStds: iStds,
+            replacementLevelZ,
+            positiveSum
+        }
     };
 }
 
 export function applyDisplayAdjustments(basePlayers, pendingAdjustments, committedAdjustments, constants, poolAmount = 1500) {
-    // If no constants provided (fallback), just return basePlayers but we can't do projection.
-    // Actually we can just proceed with updating stats.
-    const { means, stds, replacementLevelZ, positiveSum } = constants || {};
+    if (!constants) return basePlayers;
+
+    const { rateMeans, valMeans, valStds, replacementLevelZ, positiveSum } = constants;
 
     return basePlayers.map(p => {
         const pid = p.PlayerId;
@@ -142,23 +195,25 @@ export function applyDisplayAdjustments(basePlayers, pendingAdjustments, committ
         const so = processStat('SO', p.SO);
 
         // Provisional Value Calculation
-        // Uses CONSTANTS from the Base Calculation (Mean/Std/PosSum).
-        // This is an Approximation (Projected Value).
-        let projValue = p.Value; // Start with base committed value
+        let projValue = p.Value; // Fallback
 
-        if (means && stds && positiveSum) {
+        if (rateMeans && valMeans && valStds && positiveSum) {
+            // Calculate Impact Values using STATIC BASE MEANS (approximation)
+            // Ideally if many players change, the means change, but for single-player edits we assume pool stability.
+            const vERA = (rateMeans.ERA - era.val) * (p.IP / 9);
+            const vWHIP = (rateMeans.WHIP - whip.val) * p.IP;
+            const vW = w.val;
+            const vSV = sv.val;
+            const vSO = so.val;
+
             let zSum = 0;
-            zSum += stds['ERA'] ? (means['ERA'] - era.val) / stds['ERA'] : 0;
-            zSum += stds['WHIP'] ? (means['WHIP'] - whip.val) / stds['WHIP'] : 0;
-            zSum += stds['W'] ? (w.val - means['W']) / stds['W'] : 0;
-            zSum += stds['SV'] ? (sv.val - means['SV']) / stds['SV'] : 0;
-            zSum += stds['SO'] ? (so.val - means['SO']) / stds['SO'] : 0;
+            zSum += valStds['_vERA'] ? (vERA - valMeans['_vERA']) / valStds['_vERA'] : 0;
+            zSum += valStds['_vWHIP'] ? (vWHIP - valMeans['_vWHIP']) / valStds['_vWHIP'] : 0;
+            zSum += valStds['_vW'] ? (vW - valMeans['_vW']) / valStds['_vW'] : 0;
+            zSum += valStds['_vSV'] ? (vSV - valMeans['_vSV']) / valStds['_vSV'] : 0;
+            zSum += valStds['_vSO'] ? (vSO - valMeans['_vSO']) / valStds['_vSO'] : 0;
 
             const valOverRep = zSum - replacementLevelZ;
-            // Note: positiveSum technically changes if this player moves, but we hold it constant for speed stability
-            // However, if we change the poolAmount, we must re-scale.
-            // The passed in p.Value was calculated with the Base Pool Amount.
-            // We should recalculate fresh.
 
             if (valOverRep > 0) {
                 projValue = (valOverRep / positiveSum) * poolAmount;
