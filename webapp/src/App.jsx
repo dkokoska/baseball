@@ -144,10 +144,8 @@ function App() {
   const baseData = useMemo(() => {
     if (loading || !rawData.length) return [];
 
-    // Filter out excluded players BEFORE base calculation
-    const activePlayers = rawData.filter(p => !excludedPlayerIds.has(p.PlayerId));
-
-    const { players, constants } = calculateBaseValues(activePlayers, committedAdjustments, poolAmount);
+    // calculateBaseValues now handles exclusion logic (stats vs display)
+    const { players, constants } = calculateBaseValues(rawData, committedAdjustments, poolAmount, excludedPlayerIds);
     return { players, constants };
   }, [rawData, committedAdjustments, loading, poolAmount, excludedPlayerIds]);
 
@@ -172,16 +170,7 @@ function App() {
         cell: (info) => (
           <CheckboxCell
             row={info.row}
-            isExcluded={false} // Since we filter them out of data, they are by definition NOT excluded in the list .. wait.
-            // If we filter them out, they don't appear in the table.
-            // The user said: "if the user clicks on the check box for Paul Skenes, then he will be removed from the list."
-            // So yes, clicking it removes them.
-            // But then how do you bring them back? 
-            // "This is display only".
-            // Usually "Exclude" implies they stay in list but are greyed out or value is 0.
-            // BUT user said "removed from the list".
-            // So I guess they are gone. To bring them back, user probably needs a "Show Hidden" toggle or refresh.
-            // I will implement "Remove from list" behavior as requested.
+            isExcluded={excludedPlayerIds.has(info.row.original.PlayerId)}
             onToggle={toggleExclusion}
           />
         ),
@@ -198,12 +187,15 @@ function App() {
       {
         accessorKey: 'Name',
         header: 'Player',
-        cell: (info) => (
-          <div className="player-info">
-            <span className="player-name">{info.getValue()}</span>
-            <span className="player-team">{info.row.original.Team}</span>
-          </div>
-        ),
+        cell: (info) => {
+          const isExcluded = excludedPlayerIds.has(info.row.original.PlayerId);
+          return (
+            <div className="player-info">
+              <span className={`player-name ${isExcluded ? 'text-blue-500' : ''}`} style={isExcluded ? { color: '#3b82f6' } : {}}>{info.getValue()}</span>
+              <span className="player-team">{info.row.original.Team}</span>
+            </div>
+          );
+        },
       },
       {
         accessorKey: 'ERA',
@@ -237,7 +229,7 @@ function App() {
       },
     ],
     // Dependencies: handleStatChange is stable. toggleExclusion is stable.
-    [handleStatChange, toggleExclusion]
+    [handleStatChange, toggleExclusion, excludedPlayerIds]
   );
 
   const table = useReactTable({
