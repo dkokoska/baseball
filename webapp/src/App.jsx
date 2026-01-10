@@ -8,6 +8,8 @@ import {
   getFilteredRowModel,
   flexRender,
 } from '@tanstack/react-table';
+import { calculateBaseValues, applyDisplayAdjustments } from './lib/valuation';
+import { StatCell } from './components/StatCell';
 
 const API_URL = 'http://localhost:3000/api';
 
@@ -18,6 +20,8 @@ function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [globalFilter, setGlobalFilter] = useState('');
+  const [poolAmount, setPoolAmount] = useState(1500);
+  const [valuationConstants, setValuationConstants] = useState(null);
 
   // 1. Fetch CSV and Initial Adjustments
   useEffect(() => {
@@ -89,6 +93,24 @@ function App() {
         body: JSON.stringify(updates)
       });
 
+      // Also save values
+      // We need to calculate the values based on CURRENT state (merged).
+      // processedData is the latest view, so let's use that.
+      if (processedData.length > 0) {
+        // processedData contains ALL players. If we only want to save those with values...
+        // Assuming we save ALL values as they are essentially a snapshot of the valuation model.
+        const valuesToSave = processedData.map(p => ({
+          playerId: p.PlayerId,
+          value: p.Value
+        }));
+
+        await fetch(`${API_URL}/values`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(valuesToSave)
+        });
+      }
+
       // On success, merge pending into committed and clear pending
       setCommittedAdjustments(prev => ({ ...prev, ...pendingAdjustments }));
       setPendingAdjustments({});
@@ -102,61 +124,31 @@ function App() {
   const hasPendingChanges = Object.keys(pendingAdjustments).length > 0;
 
   // 4. Calculate Data
-  const processedData = useMemo(() => {
+  // 4. Calculate Data
+  // Heavy calculation: only runs when rawData or committedAdjustments change (not on pending edits)
+  const baseData = useMemo(() => {
     if (loading || !rawData.length) return [];
 
-    // Effective Adjustments for STATS display (Pending overrides Committed)
-    const effectiveAdjustments = { ...committedAdjustments, ...pendingAdjustments };
+    const { players, constants } = calculateBaseValues(rawData, committedAdjustments, poolAmount);
+    // Determine if we need to update constants in state?
+    // We can't set state in useMemo.
+    // But we can return both.
+    // Actually, let's keep it simple. We return the players here.
+    // BUT we need constants for the instant update.
 
-    // Value Calculation uses ONLY committed adjustments (per "Recalc" requirement)
-    return calculateFromRawData(rawData, committedAdjustments, effectiveAdjustments);
-  }, [rawData, committedAdjustments, pendingAdjustments, loading]);
+    return { players, constants };
+  }, [rawData, committedAdjustments, loading, poolAmount]); // Adding poolAmount to dependency reruns base calc on pool change
+
+  // Light calculation: runs on every pending edit to update display values
+  const processedData = useMemo(() => {
+    if (!baseData || !baseData.players) return [];
+
+    // We use the constants derived from the *Base* state to project the new values instantly
+    return applyDisplayAdjustments(baseData.players, pendingAdjustments, committedAdjustments, baseData.constants, poolAmount);
+  }, [baseData, pendingAdjustments, committedAdjustments, poolAmount]);
 
   // UI Components
-  const StatCell = ({ row, stat, step = 1, fixed = 0 }) => {
-    const originalValue = row.original[stat];
-    if (typeof originalValue !== 'number') return null;
 
-    const playerId = row.original.PlayerId;
-    const key = `${playerId}-${stat}`;
-
-    // Explicitly check pending first, then committed, then 0
-    const currentDelta = pendingAdjustments.hasOwnProperty(key)
-      ? pendingAdjustments[key]
-      : (committedAdjustments[key] || 0);
-
-    const displayValue = (originalValue + currentDelta).toFixed(fixed);
-    const isPending = pendingAdjustments.hasOwnProperty(key);
-    const isAdjusted = currentDelta !== 0;
-
-    let statusClass = "default";
-    if (isPending) statusClass = "pending";
-    else if (isAdjusted) statusClass = "changed";
-
-    return (
-      <div className="stat-stepper">
-        <button
-          onClick={(e) => { e.stopPropagation(); handleStatChange(playerId, stat, -step); }}
-          className="btn-step minus"
-        >
-          <Minus size={12} />
-        </button>
-
-        <div className="flex flex-col items-center flex-1 px-1">
-          <span className={`stat-value-display ${statusClass}`}>
-            {displayValue}
-          </span>
-        </div>
-
-        <button
-          onClick={(e) => { e.stopPropagation(); handleStatChange(playerId, stat, step); }}
-          className="btn-step plus"
-        >
-          <Plus size={12} />
-        </button>
-      </div>
-    );
-  };
 
   // Re-define columns in memo (no significant change except removing className helpers if any)
   const columns = useMemo(
@@ -183,27 +175,27 @@ function App() {
       {
         accessorKey: 'ERA',
         header: 'ERA',
-        cell: (info) => <StatCell row={info.row} stat="ERA" step={0.05} fixed={2} />,
+        cell: (info) => <StatCell row={info.row} stat="ERA" step={0.05} fixed={2} onStatChange={handleStatChange} />,
       },
       {
         accessorKey: 'WHIP',
         header: 'WHIP',
-        cell: (info) => <StatCell row={info.row} stat="WHIP" step={0.01} fixed={2} />,
+        cell: (info) => <StatCell row={info.row} stat="WHIP" step={0.01} fixed={2} onStatChange={handleStatChange} />,
       },
       {
         accessorKey: 'W',
         header: 'W',
-        cell: (info) => <StatCell row={info.row} stat="W" step={1} fixed={0} />,
+        cell: (info) => <StatCell row={info.row} stat="W" step={1} fixed={0} onStatChange={handleStatChange} />,
       },
       {
         accessorKey: 'SV',
         header: 'SV',
-        cell: (info) => <StatCell row={info.row} stat="SV" step={1} fixed={0} />,
+        cell: (info) => <StatCell row={info.row} stat="SV" step={1} fixed={0} onStatChange={handleStatChange} />,
       },
       {
         accessorKey: 'SO',
         header: 'SO',
-        cell: (info) => <StatCell row={info.row} stat="SO" step={5} fixed={0} />,
+        cell: (info) => <StatCell row={info.row} stat="SO" step={5} fixed={0} onStatChange={handleStatChange} />,
       },
       {
         accessorKey: 'Value',
@@ -221,7 +213,8 @@ function App() {
         },
       },
     ],
-    [committedAdjustments, pendingAdjustments]
+    // Dependencies: handleStatChange is stable.
+    [handleStatChange]
   );
 
   const table = useReactTable({
@@ -249,7 +242,8 @@ function App() {
           <div className="header-title-group">
             <h1>
               <Trophy className="icon-trophy" />
-              Fantasy Value V10
+              <Trophy className="icon-trophy" />
+              Koko's Baseball Prognostication
             </h1>
             <p className="header-subtitle">
               <Activity className="icon-activity" />
@@ -262,7 +256,20 @@ function App() {
             <div className="stats-summary">
               <div className="stat-box">
                 <div className="stat-label">Pool</div>
-                <div className="stat-value text-green">$1,500</div>
+                <div className="stat-box">
+                  <div className="stat-label">Pool</div>
+                  <div className="stat-value text-green">
+                    <div className="flex items-center gap-1">
+                      $
+                      <input
+                        type="number"
+                        className="bg-transparent text-green border-none focus:ring-0 p-0 w-16 text-right font-bold"
+                        value={poolAmount}
+                        onChange={(e) => setPoolAmount(Number(e.target.value))}
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
               <div className="stat-box">
                 <div className="stat-label">Pending</div>
@@ -359,7 +366,7 @@ function App() {
             </table>
           </div>
           <div className="footer-info">
-            Showing {table.getRowModel().rows.length} players
+            Showing {table.getRowModel().rows.length} players • Version 10
           </div>
         </div>
       </div>
@@ -367,74 +374,6 @@ function App() {
   );
 }
 
-function calculateFromRawData(rawData, committedAdjustments, effectiveAdjustments) {
-  // Logic remains exactly the same as V9
-  const players = rawData
-    .filter(p => p.Name && p.PlayerId)
-    .map(p => {
-      const pid = p.PlayerId;
-      return {
-        ...p,
-        ERA: p.ERA + (effectiveAdjustments[`${pid}-ERA`] || 0),
-        WHIP: p.WHIP + (effectiveAdjustments[`${pid}-WHIP`] || 0),
-        W: p.W + (effectiveAdjustments[`${pid}-W`] || 0),
-        SV: p.SV + (effectiveAdjustments[`${pid}-SV`] || 0),
-        SO: p.SO + (effectiveAdjustments[`${pid}-SO`] || 0),
 
-        _cERA: p.ERA + (committedAdjustments[`${pid}-ERA`] || 0),
-        _cWHIP: p.WHIP + (committedAdjustments[`${pid}-WHIP`] || 0),
-        _cW: p.W + (committedAdjustments[`${pid}-W`] || 0),
-        _cSV: p.SV + (committedAdjustments[`${pid}-SV`] || 0),
-        _cSO: p.SO + (committedAdjustments[`${pid}-SO`] || 0),
-      };
-    });
-
-  const stats = ['_cERA', '_cWHIP', '_cW', '_cSV', '_cSO'];
-  const means = {};
-  const stds = {};
-
-  stats.forEach(stat => {
-    const values = players.map(p => p[stat]);
-    const sum = values.reduce((a, b) => a + b, 0);
-    const mean = sum / values.length;
-    const variance = values.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / values.length;
-
-    means[stat] = mean;
-    stds[stat] = Math.sqrt(variance);
-  });
-
-  const scoredPlayers = players.map(p => {
-    let zSum = 0;
-    zSum += stds['_cERA'] ? (means['_cERA'] - p._cERA) / stds['_cERA'] : 0;
-    zSum += stds['_cWHIP'] ? (means['_cWHIP'] - p._cWHIP) / stds['_cWHIP'] : 0;
-    zSum += stds['_cW'] ? (p._cW - means['_cW']) / stds['_cW'] : 0;
-    zSum += stds['_cSV'] ? (p._cSV - means['_cSV']) / stds['_cSV'] : 0;
-    zSum += stds['_cSO'] ? (p._cSO - means['_cSO']) / stds['_cSO'] : 0;
-
-    return { ...p, rawZ: zSum };
-  });
-
-  scoredPlayers.sort((a, b) => b.rawZ - a.rawZ);
-
-  const replacementIdx = Math.min(200, scoredPlayers.length - 1);
-  const replacementLevelZ = scoredPlayers[replacementIdx].rawZ;
-
-  const evaluatedPlayers = scoredPlayers.map(p => ({
-    ...p,
-    valOverReplacement: p.rawZ - replacementLevelZ
-  }));
-
-  const positiveSum = evaluatedPlayers
-    .filter(p => p.valOverReplacement > 0)
-    .reduce((sum, p) => sum + p.valOverReplacement, 0);
-
-  return evaluatedPlayers.map(p => {
-    let dollarValue = 0;
-    if (positiveSum > 0) {
-      dollarValue = (p.valOverReplacement / positiveSum) * 1500;
-    }
-    return { ...p, Value: dollarValue };
-  });
-}
 
 export default App;

@@ -30,6 +30,11 @@ const db = new sqlite3.Database(dbPath, (err) => {
       delta REAL NOT NULL,
       UNIQUE(playerId, stat)
     )`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS player_values (
+      playerId TEXT PRIMARY KEY,
+      value REAL NOT NULL
+    )`);
     }
 });
 
@@ -92,6 +97,51 @@ app.post('/api/batch-adjustments', (req, res) => {
                 return;
             }
             res.json({ message: 'success', count: adjustments.length });
+        });
+    });
+});
+
+// GET player values
+app.get('/api/values', (req, res) => {
+    const sql = 'SELECT playerId, value FROM player_values';
+    db.all(sql, [], (err, rows) => {
+        if (err) {
+            res.status(400).json({ error: err.message });
+            return;
+        }
+        res.json({
+            message: 'success',
+            data: rows
+        });
+    });
+});
+
+// POST player values (Batch Upsert)
+app.post('/api/values', (req, res) => {
+    const values = req.body; // Expecting array of { playerId, value }
+
+    if (!Array.isArray(values)) {
+        return res.status(400).json({ error: 'Expected an array of values' });
+    }
+
+    const sql = `INSERT INTO player_values (playerId, value) VALUES (?, ?)
+               ON CONFLICT(playerId) DO UPDATE SET value = excluded.value`;
+
+    db.serialize(() => {
+        db.run('BEGIN TRANSACTION');
+        const stmt = db.prepare(sql);
+
+        values.forEach(v => {
+            stmt.run([v.playerId, v.value]);
+        });
+
+        stmt.finalize();
+        db.run('COMMIT', (err) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json({ message: 'success', count: values.length });
         });
     });
 });
