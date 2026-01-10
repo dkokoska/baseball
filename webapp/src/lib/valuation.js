@@ -127,44 +127,76 @@ export function calculateBaseValues(rawData, committedAdjustments, poolAmount = 
         return { ...p, rawZ: zSum };
     });
 
-    scoredActive.sort((a, b) => b.rawZ - a.rawZ);
+    // 4b. Calculate Shadow Z-Scores for EXCLUDED players (so they stay in list relative to performance)
+    const excludedPlayers = allPlayers.filter(p => p.isExcluded);
+
+    // We need to calculate their _v* stats using the SAME MEANS as active players
+    const scoredExcluded = excludedPlayers.map(p => {
+        // Impact values 
+        const diffERA = (means['ERA'] - p._cERA);
+        const valERA = diffERA * (p.IP / 9);
+
+        const diffWHIP = (means['WHIP'] - p._cWHIP);
+        const valWHIP = diffWHIP * p.IP;
+
+        // Value metrics
+        const vERA = valERA;
+        const vWHIP = valWHIP;
+        const vW = p._cW;
+        const vSV = p._cSV;
+        const vSO = p._cSO;
+
+        let zSum = 0;
+        zSum += iStds['_vERA'] ? (vERA - iMeans['_vERA']) / iStds['_vERA'] : 0;
+        zSum += iStds['_vWHIP'] ? (vWHIP - iMeans['_vWHIP']) / iStds['_vWHIP'] : 0;
+        zSum += iStds['_vW'] ? (vW - iMeans['_vW']) / iStds['_vW'] : 0;
+        zSum += iStds['_vSV'] ? (vSV - iMeans['_vSV']) / iStds['_vSV'] : 0;
+        zSum += iStds['_vSO'] ? (vSO - iMeans['_vSO']) / iStds['_vSO'] : 0;
+
+        return {
+            ...p,
+            _vERA: vERA, _vWHIP: vWHIP, _vW: vW, _vSV: vSV, _vSO: vSO,
+            rawZ: zSum
+        };
+    });
+
+    // Combine for Sorting
+    const allScored = [...scoredActive, ...scoredExcluded];
+    allScored.sort((a, b) => b.rawZ - a.rawZ);
 
     // 5. Calculate Replacement Level & Value (ACTIVE ONLY)
-    const replacementIdx = Math.min(200, scoredActive.length - 1);
-    const replacementLevelZ = scoredActive[replacementIdx].rawZ;
+    // We must only use ACTIVE players to determine the replacement level and pool distribution
+    // But we need the index of replacement level from the SORTED list of ACTIVE players only.
 
-    const evaluatedActive = scoredActive.map(p => ({
+    // Let's re-extract active sorted to find replacement level
+    // (This ensures excluded players don't push the replacement level down/up artificially)
+    const sortedActiveOnly = allScored.filter(p => !p.isExcluded);
+
+    const replacementIdx = Math.min(200, sortedActiveOnly.length - 1);
+    const replacementLevelZ = sortedActiveOnly[replacementIdx] ? sortedActiveOnly[replacementIdx].rawZ : -999;
+
+    const evaluatedPlayers = allScored.map(p => ({
         ...p,
         valOverReplacement: p.rawZ - replacementLevelZ
     }));
 
-    const positiveSum = evaluatedActive
-        .filter(p => p.valOverReplacement > 0)
+    const positiveSum = evaluatedPlayers
+        .filter(p => !p.isExcluded && p.valOverReplacement > 0)
         .reduce((sum, p) => sum + p.valOverReplacement, 0);
 
-    const finalActive = evaluatedActive.map(p => {
+    const finalPlayers = evaluatedPlayers.map(p => {
         let dollarValue = 0;
-        if (positiveSum > 0) {
+        if (!p.isExcluded && p.valOverReplacement > 0 && positiveSum > 0) {
             dollarValue = (p.valOverReplacement / positiveSum) * poolAmount;
         }
+        // Excluded players get 0 value, but keep their calculated valOverReplacement/Z for sorting context logic if needed?
+        // Actually, mapped Value is what matters for display.
+        if (p.isExcluded) dollarValue = 0;
+
         return { ...p, Value: dollarValue };
     });
 
-    // 6. Handle Excluded Players
-    // We just map them to have Value: 0 and minimal props needed.
-    const finalExcluded = allPlayers
-        .filter(p => p.isExcluded)
-        .map(p => ({
-            ...p,
-            Value: 0,
-            valOverReplacement: 0,
-            rawZ: -999 // Put them at the bottom if sorted by Z, though list sort might be external
-        }));
-
-    // Merge and Return (Active first, then excluded, or keep original order?
-    // App sorts table eventually, so merging is fine.
-    // Let's concat them.
-    const finalPlayers = [...finalActive, ...finalExcluded];
+    // We don't need step 6 logic anymore since we merged them earlier.
 
     // Return players AND constants needed for dynamic updates
     return {
