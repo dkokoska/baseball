@@ -28,6 +28,11 @@
   --color-blue: #60a5fa;
   /* blue-400 */
 
+  --color-surface-200: #262626;
+  /* neutral-800 */
+  --color-surface-300: #404040;
+  /* neutral-700 */
+
   --font-sans: system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, monospace;
 }
@@ -235,6 +240,11 @@ body {
   box-shadow: none;
 }
 
+.bg-surface-200 {
+  background-color: var(--color-surface-200);
+}
+
+
 /* Search */
 .search-container {
   width: 100%;
@@ -292,8 +302,8 @@ body {
 
 .table-header {
   background-color: rgba(0, 0, 0, 0.8);
-  font-size: 0.625rem;
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 900;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--text-muted);
@@ -466,4 +476,17 @@ body {
   font-size: 0.75rem;
   color: var(--text-dim);
   text-align: right;
+}
+
+/* Stat Input Styling */
+/* Stat Input Styling */
+.stat-input {
+  transition: all 0.2s;
+  outline: none;
+  background-color: var(--color-surface-200);
+  color: white;
+}
+
+.stat-input:focus {
+  background-color: var(--color-surface-300);
 }

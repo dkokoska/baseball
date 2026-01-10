@@ -231,15 +231,16 @@ export function applyDisplayAdjustments(basePlayers, pendingAdjustments, committ
             const pendingVal = pendingAdjustments[key];
             const committedVal = committedAdjustments[key] || 0;
 
-            const currentDelta = isPending ? pendingVal : committedVal;
-            const isAdjusted = currentDelta !== 0;
+            const displayDelta = isPending ? pendingVal : committedVal;
+            const valueCalcDelta = committedVal; // Value calc only sees committed
 
             let status = "default";
             if (isPending) status = "pending";
-            else if (isAdjusted) status = "changed";
+            else if (committedVal !== 0) status = "changed";
 
             return {
-                val: rawVal + currentDelta,
+                val: rawVal + displayDelta,    // For Display (Stat Column)
+                valForCalc: rawVal + valueCalcDelta, // For Value Calc
                 status
             };
         };
@@ -256,11 +257,13 @@ export function applyDisplayAdjustments(basePlayers, pendingAdjustments, committ
         if (rateMeans && valMeans && valStds && positiveSum) {
             // Calculate Impact Values using STATIC BASE MEANS (approximation)
             // Ideally if many players change, the means change, but for single-player edits we assume pool stability.
-            const vERA = (rateMeans.ERA - era.val) * (p.IP / 9);
-            const vWHIP = (rateMeans.WHIP - whip.val) * p.IP;
-            const vW = w.val;
-            const vSV = sv.val;
-            const vSO = so.val;
+            // USE valForCalc (Committed Only)
+            const vERA = (rateMeans.ERA - era.valForCalc) * (p.IP / 9);
+            const vWHIP = (rateMeans.WHIP - whip.valForCalc) * p.IP;
+            const vW = w.valForCalc;
+            const vSV = sv.valForCalc;
+            const vSO = so.valForCalc;
+
 
             let zSum = 0;
             zSum += valStds['_vERA'] ? (vERA - valMeans['_vERA']) / valStds['_vERA'] : 0;
@@ -270,6 +273,14 @@ export function applyDisplayAdjustments(basePlayers, pendingAdjustments, committ
             zSum += valStds['_vSO'] ? (vSO - valMeans['_vSO']) / valStds['_vSO'] : 0;
 
             const valOverRep = zSum - replacementLevelZ;
+
+            console.log("DEBUG CALC (Stat: " + p.Name + ")", {
+                vERA, ERA_ValForCalc: era.valForCalc,
+                vWHIP,
+                vW, vSV, vSO,
+                zSum, replacementLevelZ,
+                valOverRep, positiveSum, poolAmount
+            });
 
             if (valOverRep > 0) {
                 projValue = (valOverRep / positiveSum) * poolAmount;

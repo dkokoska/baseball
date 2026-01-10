@@ -274,7 +274,7 @@ function App() {
                     $
                     <input
                       type="number"
-                      className="bg-transparent text-green border-none focus:ring-0 p-0 w-16 text-right font-bold"
+                      className="stat-input w-20 text-center bg-surface-200 text-white font-bold rounded p-0.5 border-none focus:ring-accent"
                       value={poolAmount}
                       onChange={(e) => setPoolAmount(Number(e.target.value))}
                     />
